@@ -1,0 +1,229 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "factoryName":          { "type": "string", "defaultValue": "mlb-pipeline-adf" },
+    "storageAccountName":   { "type": "string" },
+    "sqlServerName":        { "type": "string" },
+    "sqlDatabaseName":      { "type": "string", "defaultValue": "mlb_analytics" },
+    "sqlAdminUser":         { "type": "string" },
+    "sqlAdminPassword":     { "type": "securestring" },
+    "containerRegistryName":{ "type": "string" }
+  },
+  "variables": {
+    "adfLocation": "[resourceGroup().location]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "name": "[parameters('factoryName')]",
+      "location": "[variables('adfLocation')]",
+      "identity": { "type": "SystemAssigned" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/AzureBlobStorage')]",
+      "dependsOn": ["[parameters('factoryName')]"],
+      "properties": {
+        "type": "AzureBlobStorage",
+        "typeProperties": {
+          "connectionString": "[concat('DefaultEndpointsProtocol=https;AccountName=', parameters('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2021-09-01').keys[0].value)]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/AzureSqlDatabase')]",
+      "dependsOn": ["[parameters('factoryName')]"],
+      "properties": {
+        "type": "AzureSqlDatabase",
+        "typeProperties": {
+          "connectionString": "[concat('Server=tcp:', parameters('sqlServerName'), '.database.windows.net,1433;Database=', parameters('sqlDatabaseName'), ';User ID=', parameters('sqlAdminUser'), ';Password=', parameters('sqlAdminPassword'), ';Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/MLB_HTTP')]",
+      "dependsOn": ["[parameters('factoryName')]"],
+      "properties": {
+        "type": "HttpServer",
+        "typeProperties": {
+          "url": "https://statsapi.mlb.com",
+          "enableServerCertificateValidation": true,
+          "authenticationType": "Anonymous"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/MLB_LiveFeed_HTTP')]",
+      "dependsOn": [
+        "[concat(parameters('factoryName'), '/linkedServices/MLB_HTTP')]"
+      ],
+      "properties": {
+        "linkedServiceName": { "referenceName": "MLB_HTTP", "type": "LinkedServiceReference" },
+        "type": "HttpFile",
+        "typeProperties": {
+          "relativeUrl": {
+            "value": "@concat('/api/v1.1/game/', pipeline().parameters.game_pk, '/feed/live')",
+            "type": "Expression"
+          },
+          "requestMethod": "GET"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/MLB_RawBlob')]",
+      "dependsOn": [
+        "[concat(parameters('factoryName'), '/linkedServices/AzureBlobStorage')]"
+      ],
+      "properties": {
+        "linkedServiceName": { "referenceName": "AzureBlobStorage", "type": "LinkedServiceReference" },
+        "type": "Json",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobStorageLocation",
+            "container": "mlb-raw",
+            "folderPath": {
+              "value": "@concat(formatDateTime(utcNow(),'yyyy/MM/dd'), '/', pipeline().parameters.game_pk)",
+              "type": "Expression"
+            },
+            "fileName": {
+              "value": "@concat(formatDateTime(utcNow(),'HHmmss'), '.json')",
+              "type": "Expression"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/MLB_Plays_SQL')]",
+      "dependsOn": [
+        "[concat(parameters('factoryName'), '/linkedServices/AzureSqlDatabase')]"
+      ],
+      "properties": {
+        "linkedServiceName": { "referenceName": "AzureSqlDatabase", "type": "LinkedServiceReference" },
+        "type": "AzureSqlTable",
+        "typeProperties": {
+          "schema": "dbo",
+          "table": "mlb_plays"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/MLB_PlayByPlay_Ingest')]",
+      "dependsOn": [
+        "[concat(parameters('factoryName'), '/datasets/MLB_LiveFeed_HTTP')]",
+        "[concat(parameters('factoryName'), '/datasets/MLB_RawBlob')]",
+        "[concat(parameters('factoryName'), '/datasets/MLB_Plays_SQL')]"
+      ],
+      "properties": {
+        "parameters": {
+          "game_pk": { "type": "string" }
+        },
+        "activities": [
+          {
+            "name": "CopyRawFeedToBlob",
+            "type": "Copy",
+            "typeProperties": {
+              "source": {
+                "type": "HttpSource",
+                "requestTimeout": "00:01:00"
+              },
+              "sink": {
+                "type": "JsonSink",
+                "storeSettings": { "type": "AzureBlobStorageWriteSettings" }
+              }
+            },
+            "inputs":  [{ "referenceName": "MLB_LiveFeed_HTTP", "type": "DatasetReference" }],
+            "outputs": [{ "referenceName": "MLB_RawBlob",        "type": "DatasetReference" }]
+          },
+          {
+            "name": "TransformAndUpsertSQL",
+            "type": "Copy",
+            "dependsOn": [{ "activity": "CopyRawFeedToBlob", "dependencyConditions": ["Succeeded"] }],
+            "typeProperties": {
+              "source": {
+                "type": "JsonSource",
+                "storeSettings": { "type": "AzureBlobStorageReadSettings", "recursive": false }
+              },
+              "sink": {
+                "type": "AzureSqlSink",
+                "writeBehavior": "upsert",
+                "upsertSettings": {
+                  "useTempDB": true,
+                  "keys": ["game_pk", "at_bat_index"]
+                },
+                "sqlWriterStoredProcedureName": "dbo.usp_UpsertMLBPlays",
+                "storedProcedureTableTypeParameterName": "plays"
+              },
+              "translator": {
+                "type": "TabularTranslator",
+                "mappings": [
+                  { "source": { "path": "$.gamePk" },                                                         "sink": { "name": "game_pk" } },
+                  { "source": { "path": "$.gameData.datetime.officialDate" },                                  "sink": { "name": "game_date" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].about.atBatIndex" },                     "sink": { "name": "at_bat_index" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].about.inning" },                         "sink": { "name": "inning" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].about.halfInning" },                     "sink": { "name": "half_inning" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].about.isComplete" },                     "sink": { "name": "is_complete" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].result.event" },                         "sink": { "name": "event" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].result.eventType" },                     "sink": { "name": "event_type" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].result.description" },                   "sink": { "name": "description" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].result.rbi" },                           "sink": { "name": "rbi" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].result.awayScore" },                     "sink": { "name": "away_score" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].result.homeScore" },                     "sink": { "name": "home_score" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].matchup.batter.id" },                    "sink": { "name": "batter_id" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].matchup.batter.fullName" },              "sink": { "name": "batter_name" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].matchup.pitcher.id" },                   "sink": { "name": "pitcher_id" } },
+                  { "source": { "path": "$.liveData.plays.allPlays[*].matchup.pitcher.fullName" },             "sink": { "name": "pitcher_name" } }
+                ]
+              }
+            },
+            "inputs":  [{ "referenceName": "MLB_RawBlob",    "type": "DatasetReference" }],
+            "outputs": [{ "referenceName": "MLB_Plays_SQL",  "type": "DatasetReference" }]
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/MLB_5min_Trigger')]",
+      "dependsOn": [
+        "[concat(parameters('factoryName'), '/pipelines/MLB_PlayByPlay_Ingest')]"
+      ],
+      "properties": {
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+          "recurrence": {
+            "frequency": "Minute",
+            "interval": 5,
+            "startTime": "2026-01-01T00:00:00Z",
+            "timeZone": "UTC"
+          }
+        },
+        "pipelines": [
+          {
+            "pipelineReference": {
+              "referenceName": "MLB_PlayByPlay_Ingest",
+              "type": "PipelineReference"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
