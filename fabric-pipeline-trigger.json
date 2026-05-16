@@ -1,0 +1,31 @@
+{
+  "name": "MLB_PlayByPlay_Schedule_Trigger",
+  "description": "Runs MLB play-by-play pipeline every 5 minutes during active game hours",
+  "properties": {
+    "type": "ScheduleTrigger",
+    "typeProperties": {
+      "recurrence": {
+        "frequency": "Minute",
+        "interval": 5,
+        "startTime": "2026-05-16T12:00:00Z",
+        "endTime": "2026-12-31T23:59:00Z",
+        "timeZone": "Eastern Standard Time",
+        "schedule": {
+          "hours": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2],
+          "minutes": [0],
+          "weekDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        }
+      }
+    },
+    "pipelines": [
+      {
+        "pipelineReference": {
+          "referenceName": "MLB_PlayByPlay_Pipeline",
+          "type": "PipelineReference"
+        },
+        "parameters": {}
+      }
+    ],
+    "annotations": []
+  }
+}

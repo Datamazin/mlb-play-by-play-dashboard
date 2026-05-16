@@ -1,0 +1,199 @@
+{
+  "name": "MLB_PlayByPlay_Pipeline",
+  "description": "Orchestrates Bronze → Silver → Gold data pipeline for MLB play-by-play data ingestion and transformation",
+  "properties": {
+    "activities": [
+      {
+        "name": "Bronze_Ingest_MLB_Data",
+        "description": "Fetch live MLB game data from Stats API and store raw JSON in Bronze lakehouse",
+        "type": "SynapseNotebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.00:30:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "ingest_mlb_playbyplay",
+            "type": "NotebookReference"
+          },
+          "parameters": {},
+          "sparkPool": {
+            "referenceName": "default",
+            "type": "BigDataPoolReference"
+          },
+          "conf": {
+            "spark.dynamicAllocation.enabled": null,
+            "spark.dynamicAllocation.minExecutors": null,
+            "spark.dynamicAllocation.maxExecutors": null
+          },
+          "numExecutors": null
+        }
+      },
+      {
+        "name": "Silver_Transform_Data",
+        "description": "Transform raw JSON from Bronze to cleaned Delta tables in Silver",
+        "type": "SynapseNotebook",
+        "dependsOn": [
+          {
+            "activity": "Bronze_Ingest_MLB_Data",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:30:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "transform_bronze_to_silver",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          },
+          "sparkPool": {
+            "referenceName": "default",
+            "type": "BigDataPoolReference"
+          }
+        }
+      },
+      {
+        "name": "Gold_Create_Analytics",
+        "description": "Create analytics-ready aggregations in Gold lakehouse",
+        "type": "SynapseNotebook",
+        "dependsOn": [
+          {
+            "activity": "Silver_Transform_Data",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:30:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "aggregate_silver_to_gold",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          },
+          "sparkPool": {
+            "referenceName": "default",
+            "type": "BigDataPoolReference"
+          }
+        }
+      },
+      {
+        "name": "Success_Notification",
+        "description": "Log successful pipeline completion",
+        "type": "SetVariable",
+        "dependsOn": [
+          {
+            "activity": "Gold_Create_Analytics",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "variableName": "PipelineStatus",
+          "value": "SUCCESS"
+        }
+      },
+      {
+        "name": "Error_Notification",
+        "description": "Log pipeline failure",
+        "type": "SetVariable",
+        "dependsOn": [
+          {
+            "activity": "Bronze_Ingest_MLB_Data",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          },
+          {
+            "activity": "Silver_Transform_Data",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          },
+          {
+            "activity": "Gold_Create_Analytics",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          }
+        ],
+        "policy": {
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "variableName": "PipelineStatus",
+          "value": "FAILED"
+        }
+      }
+    ],
+    "parameters": {
+      "RunDate": {
+        "type": "string",
+        "defaultValue": "@formatDateTime(utcnow(), 'yyyy-MM-dd')"
+      }
+    },
+    "variables": {
+      "PipelineStatus": {
+        "type": "String",
+        "defaultValue": "RUNNING"
+      },
+      "BronzeOutput": {
+        "type": "String"
+      },
+      "SilverOutput": {
+        "type": "String"
+      },
+      "GoldOutput": {
+        "type": "String"
+      }
+    },
+    "folder": {
+      "name": "MLB_Pipelines"
+    },
+    "annotations": [
+      "MLB",
+      "Play-by-Play",
+      "Real-time",
+      "Medallion Architecture"
+    ]
+  }
+}
