@@ -1,0 +1,88 @@
+{
+  "name": "MLB_PlayByPlay_Pipeline_Incremental",
+  "description": "Incremental ingestion pipeline: Bronze (checkpoint-based) → Silver → Gold. Runs every 5 minutes during game hours. 80-90% storage savings vs full snapshot.",
+  "properties": {
+    "activities": [
+      {
+        "name": "Bronze_IngestIncremental",
+        "description": "Fetch only NEW plays since last checkpoint. Creates/updates game_checkpoints table.",
+        "type": "Notebook",
+        "linkedServiceName": "Fabric",
+        "typeProperties": {
+          "notebookPath": "MLB-Bronze/ingest_mlb_playbyplay_incremental",
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          }
+        },
+        "timeout": "0.00:30:00",
+        "retry": 2,
+        "retryIntervalInSeconds": 30
+      },
+      {
+        "name": "Silver_TransformIncremental",
+        "description": "Process both full and incremental JSON files from Bronze. Handles deduplication via MERGE.",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "Bronze_IngestIncremental",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "linkedServiceName": "Fabric",
+        "typeProperties": {
+          "notebookPath": "MLB-Silver/transform_bronze_to_silver_incremental",
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          }
+        },
+        "timeout": "0.00:30:00",
+        "retry": 2,
+        "retryIntervalInSeconds": 30
+      },
+      {
+        "name": "Gold_Aggregate",
+        "description": "Create analytics tables: live_scoreboard, recent_plays, scoring_plays, batter_statistics",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "Silver_TransformIncremental",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "linkedServiceName": "Fabric",
+        "typeProperties": {
+          "notebookPath": "MLB-Gold/aggregate_silver_to_gold",
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          }
+        },
+        "timeout": "0.00:30:00",
+        "retry": 2,
+        "retryIntervalInSeconds": 30
+      }
+    ],
+    "parameters": {
+      "game_date": {
+        "type": "string",
+        "defaultValue": "@formatDateTime(utcnow(), 'yyyy-MM-dd')"
+      }
+    },
+    "annotations": [
+      "MLB",
+      "Play-by-Play",
+      "Incremental",
+      "Medallion Architecture",
+      "Real-time Analytics"
+    ],
+    "lastModified": "2026-05-16T18:00:00Z"
+  }
+}
