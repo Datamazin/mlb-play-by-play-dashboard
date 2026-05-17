@@ -245,6 +245,57 @@ if updated_checkpoints:
         print(f"   ✅ Created checkpoint table with {len(updated_checkpoints)} games")
 
 # ========================================
+# Step 5: Update Game Lifecycle State
+# ========================================
+print("\n🔄 Updating game lifecycle state...")
+
+lifecycle_schema = StructType([
+    StructField("game_pk", IntegerType(), False),
+    StructField("game_date", StringType(), False),
+    StructField("last_seen_status", StringType(), True),
+    StructField("final_snapshot_captured", BooleanType(), False),
+    StructField("final_snapshot_time", TimestampType(), True),
+    StructField("final_snapshot_path", StringType(), True),
+    StructField("last_updated", TimestampType(), False)
+])
+
+# Track ALL games today (active and non-active) so finalization notebook can detect Final games
+lifecycle_rows = [
+    {
+        "game_pk": game["gamePk"],
+        "game_date": game["gameDate"][:10],
+        "last_seen_status": game.get("status", {}).get("abstractGameState", "Unknown"),
+        "final_snapshot_captured": False,
+        "final_snapshot_time": None,
+        "final_snapshot_path": None,
+        "last_updated": datetime.utcnow()
+    }
+    for game in games
+]
+
+lifecycle_table_name = "game_lifecycle_state"
+
+if lifecycle_rows:
+    lifecycle_df = spark.createDataFrame(lifecycle_rows, schema=lifecycle_schema)
+    try:
+        lifecycle_table = DeltaTable.forName(spark, lifecycle_table_name)
+        # Only update last_seen_status — never overwrite final_snapshot_captured set by finalization notebook
+        lifecycle_table.alias("target").merge(
+            lifecycle_df.alias("source"),
+            "target.game_pk = source.game_pk"
+        ).whenMatchedUpdate(
+            set={
+                "last_seen_status": "source.last_seen_status",
+                "last_updated": "source.last_updated"
+            }
+        ).whenNotMatchedInsertAll(
+        ).execute()
+        print(f"   ✅ Lifecycle state updated for {len(lifecycle_rows)} games")
+    except:
+        lifecycle_df.write.format("delta").mode("overwrite").saveAsTable(lifecycle_table_name)
+        print(f"   📝 Created lifecycle table with {len(lifecycle_rows)} games")
+
+# ========================================
 # Summary
 # ========================================
 print("\n" + "=" * 60)

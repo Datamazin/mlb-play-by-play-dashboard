@@ -181,6 +181,61 @@ except Exception as e:
     print(f"❌ Error writing to Gold: {e}")
     raise
 
+# === Step 5: Historical Final Game Stats (from silver_plays_final) ===
+print("\n🏆 Creating historical final game stats...")
+
+gold_final_stats_rows = 0
+try:
+    # Try attached lakehouse first, fall back to OneLake cross-workspace path
+    try:
+        silver_final_df = spark.table("silver_plays_final")
+        print(f"   ✅ Read silver_plays_final via attached lakehouse")
+    except:
+        silver_final_path = f"abfss://{SILVER_WORKSPACE}@onelake.dfs.fabric.microsoft.com/{SILVER_LAKEHOUSE}.Lakehouse/Tables/silver_plays_final"
+        silver_final_df = spark.read.format("delta").load(silver_final_path)
+        print(f"   ✅ Read silver_plays_final via OneLake path")
+
+    final_today_df = silver_final_df.filter(col("game_date") == game_date)
+    final_play_count = final_today_df.count()
+
+    if final_play_count > 0:
+        gold_final_stats_df = final_today_df.groupBy(
+            "game_pk", "game_date", "home_team", "away_team", "batter_name", "batter_id"
+        ).agg(
+            count("*").alias("at_bats"),
+            sum(when(col("event_type").isin(["Single", "Double", "Triple", "Home Run"]), 1).otherwise(0)).alias("hits"),
+            sum(when(col("event_type") == "Home Run", 1).otherwise(0)).alias("home_runs"),
+            sum(when(col("event_type").isin(["Strikeout", "Strikeout - DP"]), 1).otherwise(0)).alias("strikeouts"),
+            max("home_score").alias("final_home_score"),
+            max("away_score").alias("final_away_score")
+        ).withColumn(
+            "batting_average",
+            round(col("hits") / col("at_bats"), 3)
+        ).withColumn("source", lit("final_snapshot"))
+
+        # Overwrite only this date's partition — history in other partitions is preserved
+        try:
+            gold_final_stats_df.write \
+                .format("delta") \
+                .mode("overwrite") \
+                .option("replaceWhere", f"game_date = '{game_date}'") \
+                .saveAsTable("gold_game_final_stats")
+        except:
+            # First run — table does not exist yet, create with partitioning
+            gold_final_stats_df.write \
+                .format("delta") \
+                .mode("overwrite") \
+                .partitionBy("game_date") \
+                .saveAsTable("gold_game_final_stats")
+
+        gold_final_stats_rows = gold_final_stats_df.count()
+        print(f"   ✅ gold_game_final_stats: {gold_final_stats_rows} batter rows written for {game_date}")
+    else:
+        print(f"   ℹ️  No final plays for {game_date} — skipping gold_game_final_stats")
+except Exception as e:
+    print(f"   ⚠️  Could not create gold_game_final_stats: {e}")
+    print("   ℹ️  Expected when no games completed today")
+
 # Summary
 print("\n" + "=" * 60)
 print(f"✅ Silver → Gold aggregation complete!")
@@ -195,7 +250,8 @@ output = {
     "game_date": game_date,
     "games": scoreboard_df.count(),
     "total_plays": plays_df.count(),
-    "scoring_plays": scoring_plays_df.count()
+    "scoring_plays": scoring_plays_df.count(),
+    "gold_final_stats_rows": gold_final_stats_rows
 }
 
 mssparkutils.notebook.exit(json.dumps(output))

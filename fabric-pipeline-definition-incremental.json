@@ -46,12 +46,64 @@
         "retryIntervalInSeconds": 30
       },
       {
+        "name": "Bronze_FinalizeCompleteGames",
+        "description": "Detect newly-Final games and capture one canonical full play-by-play snapshot per game. Marks final_snapshot_captured in game_lifecycle_state.",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "Bronze_IngestIncremental",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "linkedServiceName": "Fabric",
+        "typeProperties": {
+          "notebookPath": "MLB-Bronze/ingest_mlb_final_snapshot",
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          }
+        },
+        "timeout": "0.00:30:00",
+        "retry": 2,
+        "retryIntervalInSeconds": 30
+      },
+      {
+        "name": "Silver_ReconcileFinal",
+        "description": "Process canonical final snapshots into silver_plays_final and write per-game closure audit rows to silver_game_closure_audit.",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "Bronze_FinalizeCompleteGames",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "linkedServiceName": "Fabric",
+        "typeProperties": {
+          "notebookPath": "MLB-Silver/reconcile_final_to_silver",
+          "parameters": {
+            "game_date": {
+              "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+              "type": "Expression"
+            }
+          }
+        },
+        "timeout": "0.00:30:00",
+        "retry": 2,
+        "retryIntervalInSeconds": 30
+      },
+      {
         "name": "Gold_Aggregate",
-        "description": "Create analytics tables: live_scoreboard, recent_plays, scoring_plays, batter_statistics",
+        "description": "Create analytics tables: live_scoreboard, recent_plays, scoring_plays, batter_statistics, gold_game_final_stats",
         "type": "Notebook",
         "dependsOn": [
           {
             "activity": "Silver_TransformIncremental",
+            "dependencyConditions": ["Succeeded"]
+          },
+          {
+            "activity": "Silver_ReconcileFinal",
             "dependencyConditions": ["Succeeded"]
           }
         ],
